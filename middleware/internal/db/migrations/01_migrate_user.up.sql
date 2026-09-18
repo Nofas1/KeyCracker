@@ -1,5 +1,5 @@
 CREATE TABLE users (
 	user_id SERIAL PRIMARY KEY,
 	name TEXT UNIQUE NOT NULL,
-	password TEXT NOT NULL
+	token JSONB NOT NULL
 );

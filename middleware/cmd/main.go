@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 
@@ -13,10 +13,14 @@ import (
 	"key_cracker/middleware/internal/repository"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	// "google.golang.org/api/calendar/v3"
+	// "google.golang.org/api/option"
 )
 
 type AuthRequest struct {
@@ -29,24 +33,22 @@ type AuthResponse struct {
 }
 
 type AuthConnection struct {
-	client *http.Client
-	rep *repository.Repo
+	rep    *repository.Repo
 	logger *slog.Logger
 }
 
-func NewAuthConnection(client *http.Client, cfg *config.Config, logger *slog.Logger) *AuthConnection {
+func NewAuthConnection(cfg *config.Config, logger *slog.Logger) *AuthConnection {
 	rep, err := repository.NewRepository(logger)
-    if err != nil {
-        logger.Error(
+	if err != nil {
+		logger.Error(
 			"authConnection failed to initialize repository",
 			"error", err,
 		)
-        panic("failed to connect to database")
-    }
-    logger.Info("authConnection initialized successfully")
+		panic("failed to connect to database")
+	}
+	logger.Info("authConnection initialized successfully")
 	return &AuthConnection{
-		client: client,
-		rep: rep,
+		rep:    rep,
 		logger: logger,
 	}
 }
@@ -79,7 +81,6 @@ func RegisterHandler(auth mw.AAA) http.HandlerFunc {
 		body, _ := io.ReadAll(r.Body)
 		fmt.Printf("%s", string(body))
 		err := json.Unmarshal(body, &req)
-		// err := json.NewDecoder(body).Decode(&req)
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -96,6 +97,28 @@ func RegisterHandler(auth mw.AAA) http.HandlerFunc {
 	}
 }
 
+func VerifyHandler(auth mw.AAA) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenString, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read token", http.StatusBadRequest)
+			return
+		}
+
+		user, err := auth.Verify(string(tokenString))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"user":   user,
+			"status": "valid",
+		})
+	}
+}
+
 func (a *AuthConnection) AuthHandler(auth mw.AAA, next http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
@@ -104,13 +127,13 @@ func (a *AuthConnection) AuthHandler(auth mw.AAA, next http.Handler) http.Handle
 			return
 		}
 
-		bearer_token := strings.Split(authHeader, " ")
-		if strings.ToLower(bearer_token[0]) != "bearer" || len(bearer_token) != 2 {
+		bearerToken := strings.Split(authHeader, " ")
+		if len(bearerToken) != 2 || strings.ToLower(bearerToken[0]) != "bearer" {
 			http.Error(w, "Invalid authorization format", http.StatusUnauthorized)
 			return
 		}
 
-		tokenString := bearer_token[1]
+		tokenString := bearerToken[1]
 
 		if _, err := auth.Verify(tokenString); err != nil {
 			a.logger.Error(
@@ -125,27 +148,80 @@ func (a *AuthConnection) AuthHandler(auth mw.AAA, next http.Handler) http.Handle
 	}
 }
 
+// getTokenFromWeb запрашивает OAuth-код у пользователя и обменивает его на токен.
+func getTokenFromWeb(cfg *oauth2.Config) (*oauth2.Token, error) {
+	authURL := cfg.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+	fmt.Printf("Go to the following link in your browser then type the "+
+		"authorization code: \n%v\n", authURL)
+
+	var authCode string
+	if _, err := fmt.Scan(&authCode); err != nil {
+		return nil, fmt.Errorf("unable to read authorization code: %w", err)
+	}
+
+	tok, err := cfg.Exchange(context.TODO(), authCode)
+	if err != nil {
+		return nil, fmt.Errorf("unable to retrieve token from web: %w", err)
+	}
+	return tok, nil
+}
+
+func (a *AuthConnection) GoogleAuthHandler(auth mw.AAA, name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token, err := a.rep.GetToken(r.Context(), name)
+		if errors.Is(err, repository.UserNotExist) {
+			oauthCfg, cfgErr := google.ConfigFromJSON([]byte{}, "https://www.googleapis.com/auth/userinfo.email")
+			if cfgErr != nil {
+				a.logger.Error("failed to load google oauth config", "error", cfgErr)
+				http.Error(w, "OAuth config error", http.StatusInternalServerError)
+				return
+			}
+			tok, tokErr := getTokenFromWeb(oauthCfg)
+			if tokErr != nil {
+				a.logger.Error("failed to get token from web", "error", tokErr)
+				http.Error(w, "OAuth flow failed", http.StatusInternalServerError)
+				return
+			}
+			// TODO: сохранить tok в репозиторий
+			_ = tok
+			return
+		}
+		if err != nil {
+			a.logger.Error("failed to get token", "error", err)
+			http.Error(w, "", http.StatusForbidden)
+			return
+		}
+
+		_ = token
+		// TODO: использовать токен для запроса к Google API
+	}
+}
+
 func main() {
-	var cfg_path string
-	flag.StringVar(&cfg_path, "config", "config.yaml", "config path")
+	var cfgPath string
+	flag.StringVar(&cfgPath, "config", "config.yaml", "config path")
 	flag.Parse()
 
-	client := &http.Client{}
-	cfg, err := config.LoadConfig(cfg_path)
+	cfg, err := config.LoadConfig(cfgPath)
 	if err != nil {
 		panic(err)
 	}
-	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
-	authConnection := NewAuthConnection(client, cfg, logger)
 
-	authService, err := mw.New(time.Hour, logger, authConnection.rep)
+	if cfg.SecretKey == "" {
+		panic("SECRET_KEY must be set in config")
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	authConnection := NewAuthConnection(cfg, logger)
+
+	authService, err := mw.New(time.Hour, logger, authConnection.rep, cfg.SecretKey)
 	if err != nil {
 		panic(err)
 	}
 
 	http.HandleFunc("/login", LoginHandler(authService))
 	http.HandleFunc("/register", RegisterHandler(authService))
-	http.Handle("/bot", authConnection.AuthHandler(authService))
+	http.HandleFunc("/verify", VerifyHandler(authService))
 
 	logger.Info("Listening on", "Adr", cfg.Gateway.Address, "Port", cfg.Gateway.Port)
 	err = http.ListenAndServe(fmt.Sprintf("%s:%d", cfg.Gateway.Address, cfg.Gateway.Port), nil)

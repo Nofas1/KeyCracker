@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 
+	"key_cracker/middleware/internal/db"
+
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,6 +19,10 @@ import (
 type Repo struct {
 	pool *pgxpool.Pool
 }
+
+var (
+	UserNotExist = errors.New("user not found")
+)
 
 func NewRepository(logger *slog.Logger) (*Repo, error) {
 	if err := godotenv.Load(); err != nil {
@@ -71,4 +77,17 @@ func (rep *Repo) GetPasswordHash(ctx context.Context, name string) (string, erro
         return "", fmt.Errorf("failed to get password hash: %w", err)
     }
     return hashed, nil
+}
+
+func (rep *Repo) GetToken(ctx context.Context, name string) (string, error) {
+	query := `SELECT token FROM users WHERE name = $1`
+	var token string
+    err := rep.pool.QueryRow(ctx, query, name).Scan(&token)
+    if err != nil {
+        if errors.Is(err, pgx.ErrNoRows) {
+            return "", UserNotExist
+        }
+        return "", fmt.Errorf("failed to get token: %w", err)
+    }
+    return token, nil
 }

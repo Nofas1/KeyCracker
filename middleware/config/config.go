@@ -22,6 +22,7 @@ type Config struct {
 
 	AdminUser string `env:"ADMIN_USER"`
 	AdminPass string `env:"ADMIN_PASSWORD"`
+	SecretKey string `env:"SECRET_KEY" yaml:"secret_key"`
 }
 
 func LoadConfig(path string) (*Config, error) {
