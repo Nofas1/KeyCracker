@@ -100,3 +100,7 @@ func (s *LockStore) List(ctx context.Context) ([]Lock, error) {
 	}
 	return locks, cur.Err()
 }
+
+func (s *LockStore) Close(ctx context.Context) error {
+	return s.client.Disconnect(ctx)
+}

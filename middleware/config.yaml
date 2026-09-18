@@ -1,0 +1,7 @@
+gateway:
+  address: ""
+  port: 8085
+
+services:
+  auth:
+    url: "http://localhost:8081"

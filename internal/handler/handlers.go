@@ -41,7 +41,7 @@ func NewHandler(service *service.KeyCrackerService, logger *slog.Logger) *Handle
 	}
 }
 
-func RegisterHandlers(mux *http.ServeMux, logger *slog.Logger) {
+func RegisterHandlers(mux *http.ServeMux, svc *service.KeyCrackerService, logger *slog.Logger) {
 	mux.HandleFunc("POST /solve", func(w http.ResponseWriter, r *http.Request) {
 		
 		var req SolveRequest
